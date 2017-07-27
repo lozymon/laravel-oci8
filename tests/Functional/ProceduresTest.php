@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\Capsule\Manager as Capsule;
+use Illuminate\Database\Schema\Blueprint;
 use Yajra\Oci8\Connectors\OracleConnector;
 use Yajra\Oci8\Oci8Connection;
 
@@ -22,6 +23,9 @@ class ProceduresTest extends PHPUnit_Framework_TestCase
 
         //string concat
         $this->simpleConcatTest($connection, $procedureName);
+
+        //ref cursor from table
+        $this->refCursorTestFromTable($connection, $procedureName);
     }
 
     /**
@@ -67,6 +71,10 @@ class ProceduresTest extends PHPUnit_Framework_TestCase
             'port'         => 49161
         ]);
 
+        // Make this Capsule instance available globally via static methods... (optional)
+        $capsule->setAsGlobal();
+
+
         return $capsule->getConnection();
     }
 
@@ -76,7 +84,7 @@ class ProceduresTest extends PHPUnit_Framework_TestCase
      *
      * @return array
      */
-    private function simpleMultiplyTest($connection, $procedureName)
+    private function simpleMultiplyTest(Oci8Connection $connection, $procedureName)
     {
         $command = "
             CREATE OR REPLACE PROCEDURE demo(p1 IN NUMBER, p2 OUT NUMBER) AS
@@ -131,4 +139,45 @@ class ProceduresTest extends PHPUnit_Framework_TestCase
 
         $this->assertSame($first . $last, $output);
     }
+
+    /**
+     * @param $connection
+     * @param $procedureName
+     *
+     * @return string
+     */
+    private function refCursorTestFromTable(Oci8Connection $connection, $procedureName)
+    {
+        $connection->getSchemaBuilder()->drop('demotable');
+        $connection->getSchemaBuilder()->create('demotable', function (Blueprint $table) {
+            $table->string('name');
+        });
+
+        $rows = [
+            [
+                'NAME' => 'Max'
+            ],
+            [
+                'NAME' => 'John'
+            ]
+        ];
+        $connection->table('demotable')->insert($rows);
+
+        $command = "
+            CREATE OR REPLACE PROCEDURE demo(p1 OUT SYS_REFCURSOR) AS
+            BEGIN
+                OPEN p1 
+                FOR 
+                SELECT name
+                FROM demotable; 
+            END;
+        ";
+
+        $connection->getPdo()->exec($command);
+
+        $result = $connection->executeProcedureWithCursor($procedureName);
+
+        $this->assertSame($rows, $result);
+    }
+
 }

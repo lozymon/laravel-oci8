@@ -252,43 +252,64 @@ class Oci8Connection extends Connection
 
     /**
      * Execute a PL/SQL Procedure and return its cursor result.
-     * Usage: DB::executeProcedure($procedureName, $bindings).
-     * $bindings looks like:
-     *         $bindings = [
-     *                  'p_userid'  => $id
-     *         ];
+     * Usage: DB::executeProcedureWithCursor($procedureName, $bindings).
      *
+     * https://docs.oracle.com/cd/E17781_01/appdev.112/e18555/ch_six_ref_cur.htm#TDPPH218
      * @param string $procedureName
      * @param array  $bindings
-     * @param mixed  $returnType
      *
      * @return array
      */
-    public function executeProcedureWithCursor($procedureName, $bindings, $returnType = PDO::PARAM_STMT)
+    public function executeProcedureWithCursor($procedureName, array $bindings = [])
     {
-        $command = sprintf('begin %s(:%s, :cursor); end;', $procedureName, implode(', :', array_keys($bindings)));
+        //crazy hack to get private properties for testing now...
+        $reader = function & ($object, $property) {
+            $value = &Closure::bind(function & () use ($property) {
+                return $this->$property;
+            }, $object, $object)->__invoke();
 
-        $stmt = $this->getPdo()->prepare($command);
+            return $value;
+        };
 
-        foreach ($bindings as $bindingName => &$bindingValue) {
-            $stmt->bindParam(':' . $bindingName, $bindingValue);
+        /** @var Oci8 $oci8 */
+        $oci8     = $this->getPdo();
+        $resource = &$reader($oci8, 'dbh');
+
+        //create sql command with bindings
+        $sql = $this->createSqlFromProcedure($procedureName, $bindings);
+
+        $stmt = oci_parse($resource, "begin demo(:cursor); end;");
+
+        foreach ($bindings as $key => &$value) {
+
+            $type      = SQLT_CHR;
+            $maxLength = -1;
+
+            //detect types
+            if (is_int($value)) {
+                $type = SQLT_INT;
+            }
+
+            if (is_string($value)) {
+                $type      = SQLT_CHR;
+                $maxLength = 32;
+            }
+
+            oci_bind_by_name($stmt, ':' . $key, $value, $maxLength, $type);
         }
 
-        $cursor = null;
 
-        $stmt->bindParam(':cursor', $cursor, $returnType);
-        $stmt->execute();
+        //bind cursor
+        $cursor = oci_new_cursor($resource);
+        oci_bind_by_name($stmt, ':cursor', $cursor, -1, OCI_B_CURSOR);
 
-        if ($returnType === PDO::PARAM_STMT) {
-            $statement = new Statement($cursor, $this->getPdo(), $this->getPdo()->getOptions());
-            $statement->execute();
-            $results = $statement->fetchAll(PDO::FETCH_ASSOC);
-            $statement->closeCursor();
+        oci_execute($stmt);
 
-            return $results;
-        }
+        oci_execute($cursor);
 
-        return $cursor;
+        oci_fetch_all($cursor, $res, 0, -1, OCI_FETCHSTATEMENT_BY_ROW);
+
+        return $res;
     }
 
     /**
@@ -304,7 +325,7 @@ class Oci8Connection extends Connection
      *
      * @return bool
      */
-    public function executeProcedure($procedureName, array $bindings)
+    public function executeProcedure($procedureName, array $bindings = [])
     {
         //crazy hack to get private properties for testing now...
         $reader = function & ($object, $property) {
