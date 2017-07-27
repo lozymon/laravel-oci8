@@ -322,10 +322,26 @@ class Oci8Connection extends Connection
         //create sql command with bindings
         $sql = $this->createSqlFromProcedure($procedureName, $bindings);
 
+
         $stmt = oci_parse($resource, $sql);
 
         foreach ($bindings as $key => &$value) {
-            oci_bind_by_name($stmt, ':' . $key, $value, -1, SQLT_INT);
+
+            $type      = SQLT_CHR;
+            $maxLength = -1;
+
+            //detect types
+
+            if (is_int($value)) {
+                $type = SQLT_INT;
+            }
+
+            if (is_string($value)) {
+                $type      = SQLT_CHR;
+                $maxLength = 32;
+            }
+
+            oci_bind_by_name($stmt, ':' . $key, $value, $maxLength, $type);
         }
 
         return oci_execute($stmt);
