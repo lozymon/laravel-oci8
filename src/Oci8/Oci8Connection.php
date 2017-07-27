@@ -2,6 +2,7 @@
 
 namespace Yajra\Oci8;
 
+use Closure;
 use Doctrine\DBAL\Connection as DoctrineConnection;
 use Doctrine\DBAL\Driver\OCI8\Driver as DoctrineDriver;
 use Illuminate\Database\Connection;
@@ -14,6 +15,7 @@ use Yajra\Oci8\Schema\Grammars\OracleGrammar as SchemaGrammar;
 use Yajra\Oci8\Schema\OracleBuilder as SchemaBuilder;
 use Yajra\Oci8\Schema\Sequence;
 use Yajra\Oci8\Schema\Trigger;
+use Yajra\Pdo\Oci8;
 use Yajra\Pdo\Oci8\Statement;
 
 class Oci8Connection extends Connection
@@ -34,10 +36,10 @@ class Oci8Connection extends Connection
     protected $trigger;
 
     /**
-     * @param PDO|\Closure $pdo
-     * @param string $database
-     * @param string $tablePrefix
-     * @param array $config
+     * @param PDO|Closure $pdo
+     * @param string      $database
+     * @param string      $tablePrefix
+     * @param array       $config
      */
     public function __construct($pdo, $database = '', $tablePrefix = '', array $config = [])
     {
@@ -60,6 +62,7 @@ class Oci8Connection extends Connection
      * Set current schema.
      *
      * @param string $schema
+     *
      * @return $this
      */
     public function setSchema($schema)
@@ -76,6 +79,7 @@ class Oci8Connection extends Connection
      * Update oracle session variables.
      *
      * @param array $sessionVars
+     *
      * @return $this
      */
     public function setSessionVars(array $sessionVars)
@@ -110,6 +114,7 @@ class Oci8Connection extends Connection
      * Set sequence class.
      *
      * @param \Yajra\Oci8\Schema\Sequence $sequence
+     *
      * @return \Yajra\Oci8\Schema\Sequence
      */
     public function setSequence(Sequence $sequence)
@@ -131,6 +136,7 @@ class Oci8Connection extends Connection
      * Set oracle trigger class.
      *
      * @param \Yajra\Oci8\Schema\Trigger $trigger
+     *
      * @return \Yajra\Oci8\Schema\Trigger
      */
     public function setTrigger(Trigger $trigger)
@@ -156,6 +162,7 @@ class Oci8Connection extends Connection
      * Begin a fluent query against a database table.
      *
      * @param string $table
+     *
      * @return \Yajra\Oci8\Query\OracleBuilder
      */
     public function table($table)
@@ -171,6 +178,7 @@ class Oci8Connection extends Connection
      * Set oracle session date format.
      *
      * @param string $format
+     *
      * @return $this
      */
     public function setDateFormat($format = 'YYYY-MM-DD HH24:MI:SS')
@@ -191,12 +199,12 @@ class Oci8Connection extends Connection
     public function getDoctrineConnection()
     {
         if (is_null($this->doctrineConnection)) {
-            $data = ['pdo' => $this->getPdo(), 'user' => $this->getConfig('username')];
+            $data                     = ['pdo' => $this->getPdo(), 'user' => $this->getConfig('username')];
             $this->doctrineConnection = new DoctrineConnection(
                 $data, $this->getDoctrineDriver()
             );
         }
-        
+
         return $this->doctrineConnection;
     }
 
@@ -216,10 +224,12 @@ class Oci8Connection extends Connection
      * 'bye'], PDO::PARAM_LOB).
      *
      * @author Tylerian - jairo.eog@outlook.com
+     *
      * @param string $sql (mixed)
-     * @param array $bindings (kvp array)
-     * @param int $returnType (PDO::PARAM_*)
-     * @param int $length
+     * @param array  $bindings (kvp array)
+     * @param int    $returnType (PDO::PARAM_*)
+     * @param int    $length
+     *
      * @return mixed $returnType
      */
     public function executeFunction($sql, array $bindings = [], $returnType = PDO::PARAM_STR, $length = null)
@@ -227,7 +237,7 @@ class Oci8Connection extends Connection
         $query = $this->getPdo()->prepare('begin :result := ' . $sql . '; end;');
 
         foreach ($bindings as $key => &$value) {
-            if (! preg_match('/^:(.*)$/i', $key)) {
+            if (!preg_match('/^:(.*)$/i', $key)) {
                 $key = ':' . $key;
             }
 
@@ -241,7 +251,7 @@ class Oci8Connection extends Connection
     }
 
     /**
-     * Execute a PL/SQL Procedure and return its result.
+     * Execute a PL/SQL Procedure and return its cursor result.
      * Usage: DB::executeProcedure($procedureName, $bindings).
      * $bindings looks like:
      *         $bindings = [
@@ -249,11 +259,12 @@ class Oci8Connection extends Connection
      *         ];
      *
      * @param string $procedureName
-     * @param array $bindings
-     * @param mixed $returnType
+     * @param array  $bindings
+     * @param mixed  $returnType
+     *
      * @return array
      */
-    public function executeProcedure($procedureName, $bindings, $returnType = PDO::PARAM_STMT)
+    public function executeProcedureWithCursor($procedureName, $bindings, $returnType = PDO::PARAM_STMT)
     {
         $command = sprintf('begin %s(:%s, :cursor); end;', $procedureName, implode(', :', array_keys($bindings)));
 
@@ -281,10 +292,51 @@ class Oci8Connection extends Connection
     }
 
     /**
+     * Execute a PL/SQL Procedure and return its cursor result.
+     * Usage: DB::executeProcedure($procedureName, $bindings).
+     * $bindings looks like:
+     *         $bindings = [
+     *                  'p_userid'  => $id
+     *         ];
+     *
+     * @param string $procedureName
+     * @param array  $bindings
+     *
+     * @return bool
+     */
+    public function executeProcedure($procedureName, array $bindings)
+    {
+        //crazy hack to get private properties for testing now...
+        $reader = function & ($object, $property) {
+            $value = &Closure::bind(function & () use ($property) {
+                return $this->$property;
+            }, $object, $object)->__invoke();
+
+            return $value;
+        };
+
+        /** @var Oci8 $oci8 */
+        $oci8     = $this->getPdo();
+        $resource = &$reader($oci8, 'dbh');
+
+        //create sql command with bindings
+        $sql = $this->createSqlFromProcedure($procedureName, $bindings);
+
+        $stmt = oci_parse($resource, $sql);
+
+        foreach ($bindings as $key => &$value) {
+            oci_bind_by_name($stmt, ':' . $key, $value, -1, SQLT_INT);
+        }
+
+        return oci_execute($stmt);
+    }
+
+
+    /**
      * Bind values to their parameters in the given statement.
      *
      * @param \PDOStatement $statement
-     * @param array $bindings
+     * @param array         $bindings
      */
     public function bindValues($statement, $bindings)
     {
@@ -307,6 +359,7 @@ class Oci8Connection extends Connection
      * Set the table prefix and return the grammar.
      *
      * @param \Illuminate\Database\Grammar|\Yajra\Oci8\Query\Grammars\OracleGrammar|\Yajra\Oci8\Schema\Grammars\OracleGrammar $grammar
+     *
      * @return \Illuminate\Database\Grammar
      */
     public function withTablePrefix(Grammar $grammar)
@@ -318,6 +371,7 @@ class Oci8Connection extends Connection
      * Set the schema prefix and return the grammar.
      *
      * @param \Illuminate\Database\Grammar|\Yajra\Oci8\Query\Grammars\OracleGrammar|\Yajra\Oci8\Schema\Grammars\OracleGrammar $grammar
+     *
      * @return \Illuminate\Database\Grammar
      */
     public function withSchemaPrefix(Grammar $grammar)
@@ -355,5 +409,22 @@ class Oci8Connection extends Connection
     protected function getDefaultPostProcessor()
     {
         return new Processor();
+    }
+
+    /**
+     * Creates sql command to run a procedure with bindings
+     *
+     * @param        $procedureName
+     * @param array  $bindings
+     *
+     * @return string
+     */
+    private function createSqlFromProcedure($procedureName, array $bindings)
+    {
+        $bindingString = implode(',', array_map(function ($param) {
+            return ':' . $param;
+        }, array_keys($bindings)));
+
+        return sprintf('begin %s(%s); end;', $procedureName, $bindingString);
     }
 }
