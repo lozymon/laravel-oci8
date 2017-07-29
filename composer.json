@@ -29,12 +29,5 @@
             "Yajra\\": "src/"
         }
     },
-    "extra": {
-        "laravel": {
-            "providers": [
-                "Yajra\Oci8\Oci8ServiceProvider"
-            ]
-        }
-    },
     "minimum-stability": "stable"
 }
